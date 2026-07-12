@@ -81,7 +81,7 @@ header h1{font-size:13px;font-weight:700;letter-spacing:.05em;white-space:nowrap
 .sv-card{background:var(--white);border:1px solid var(--amber);border-radius:var(--r);padding:16px;}
 .sv-title{font-size:15px;font-weight:700;margin-bottom:10px;}
 .sv-body{font-size:13px;line-height:1.9;white-space:pre-wrap;color:#333;}
-.brace-fig{display:block;max-width:100%;height:auto;margin:4px 0;}
+.brace-fig{display:block;margin:4px 0;}
 
 /* PDFページビューア */
 .pdf-viewer{margin-top:16px;border:1px solid var(--line);border-radius:var(--r);overflow:hidden;background:#525659;}
@@ -816,12 +816,25 @@ function renderDefs(defs) {
 // ── ユーティリティ ──────────────────────────────────
 function esc(s){return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');}
 
-// parser.pyが埋め込む｛画像参照マーカー(⬟ファイル名⬡)を<img>タグに変換する
+// parser.pyが埋め込む｛画像参照マーカー(⬟ファイル名|幅pt|高さpt⬡)を<img>タグに変換する
+// PDFのpt単位を標準的な画面換算(1pt=1.3333px)でCSSサイズに変換し、
+// 周囲の本文とおおよそ同じ文字サイズで表示されるようにする
 // ※必ずesc()適用後の文字列に対して呼び出すこと
+const PT_TO_PX = 1.3333;
 function wrapBraceGroups(escapedHtml){
-  return escapedHtml.replace(/\u2b1f([^\u2b1f\u2b21]+)\u2b21\n?/g, (m, filename) => {
-    const src = FIGURES_BASE + filename.trim();
-    return `<img class="brace-fig" src="${src}" alt="代替表現（画像）" loading="lazy">`;
+  return escapedHtml.replace(/\u2b1f([^\u2b1f\u2b21]+)\u2b21\n?/g, (m, payload) => {
+    const parts = payload.trim().split('|');
+    const filename = parts[0];
+    const wPt = parseFloat(parts[1]);
+    const hPt = parseFloat(parts[2]);
+    const src = FIGURES_BASE + filename;
+    let style = '';
+    if (!isNaN(wPt) && !isNaN(hPt)) {
+      const wPx = Math.round(wPt * PT_TO_PX);
+      const hPx = Math.round(hPt * PT_TO_PX);
+      style = ` style="width:${wPx}px;height:${hPx}px;max-width:100%;"`;
+    }
+    return `<img class="brace-fig"${style} src="${src}" alt="代替表現（画像）" loading="lazy">`;
   });
 }
 function kl(k){return {H1:'大章',H2:'章',H3:'節',H4:'小見出し',H5:'項',DEF:'定義',BOX_TITLE:'囲み'}[k]||k;}
