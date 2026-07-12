@@ -828,13 +828,14 @@ function wrapBraceGroups(escapedHtml){
     const wPt = parseFloat(parts[1]);
     const hPt = parseFloat(parts[2]);
     const src = FIGURES_BASE + filename;
+    const alt = filename.startsWith('fig_') ? '図' : '代替表現（画像）';
     let style = '';
     if (!isNaN(wPt) && !isNaN(hPt)) {
       const wPx = Math.round(wPt * PT_TO_PX);
       const hPx = Math.round(hPt * PT_TO_PX);
       style = ` style="width:${wPx}px;height:${hPx}px;max-width:100%;"`;
     }
-    return `<img class="brace-fig"${style} src="${src}" alt="代替表現（画像）" loading="lazy">`;
+    return `<img class="brace-fig"${style} src="${src}" alt="${alt}" loading="lazy">`;
   });
 }
 function kl(k){return {H1:'大章',H2:'章',H3:'節',H4:'小見出し',H5:'項',DEF:'定義',BOX_TITLE:'囲み'}[k]||k;}
