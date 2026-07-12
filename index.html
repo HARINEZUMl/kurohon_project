@@ -81,6 +81,8 @@ header h1{font-size:13px;font-weight:700;letter-spacing:.05em;white-space:nowrap
 .sv-card{background:var(--white);border:1px solid var(--amber);border-radius:var(--r);padding:16px;}
 .sv-title{font-size:15px;font-weight:700;margin-bottom:10px;}
 .sv-body{font-size:13px;line-height:1.9;white-space:pre-wrap;color:#333;}
+.brace-group{position:relative;margin:6px 0 6px 4px;padding:6px 10px;border-left:3px solid var(--amber,#c99a3c);background:rgba(201,154,60,.06);border-radius:0 4px 4px 0;}
+.brace-group::before{content:"代替表現";position:absolute;top:-9px;left:8px;font-size:10px;color:var(--amber,#c99a3c);background:var(--white,#fff);padding:0 4px;}
 
 /* PDFページビューア */
 .pdf-viewer{margin-top:16px;border:1px solid var(--line);border-radius:var(--r);overflow:hidden;background:#525659;}
@@ -594,6 +596,7 @@ function showSection(id) {
       const er = esc(ref.ref_text).replace(/[.*+?^${}()|[\]\\]/g,'\\$&');
       body = body.replace(new RegExp(er,'g'), `<span class="rl" data-ref="${esc(ref.ref_text)}">${esc(ref.ref_text)}</span>`);
     }
+    body = wrapBraceGroups(body);
     const bc = [sec.parent_h1, sec.parent_h2, sec.parent_h3].filter(Boolean).join(' › ');
     ra.innerHTML = `
       <div class="sv">
@@ -628,6 +631,7 @@ function showSection(id) {
     const er = esc(ref.ref_text).replace(/[.*+?^${}()|[\]\\]/g,'\\$&');
     body = body.replace(new RegExp(er,'g'), `<span class="rl" data-ref="${esc(ref.ref_text)}">${esc(ref.ref_text)}</span>`);
   }
+  body = wrapBraceGroups(body);
   const bc = [sec.parent_h1, sec.parent_h2, sec.parent_h3].filter(Boolean).join(' › ');
 
   ra.innerHTML = `
@@ -695,6 +699,7 @@ function showSectionGroup(sec, ra) {
       const er = esc(ref.ref_text).replace(/[.*+?^${}()|[\]\\]/g,'\\$&');
       body = body.replace(new RegExp(er,'g'), `<span class="rl" data-ref="${esc(ref.ref_text)}">${esc(ref.ref_text)}</span>`);
     }
+    body = wrapBraceGroups(body);
 
     const block = document.createElement('div');
     block.style.cssText = 'margin-bottom:14px;padding-bottom:14px;border-bottom:1px solid var(--line);';
@@ -709,6 +714,7 @@ function showSectionGroup(sec, ra) {
         const er = esc(ref.ref_text).replace(/[.*+?^${}()|[\]\\]/g,'\\$&');
         fullHtml = fullHtml.replace(new RegExp(er,'g'), `<span class="rl" data-ref="${esc(ref.ref_text)}">${esc(ref.ref_text)}</span>`);
       }
+      fullHtml = wrapBraceGroups(fullHtml);
       block.innerHTML = `
         <div style="font-size:13px;font-weight:700;color:var(--navy);margin:10px 0 6px;border-left:3px solid var(--amber);padding-left:8px">${esc(child.title||'')}</div>
         ${child.text ? `<div class="sv-body">${fullHtml.replace(esc(child.title||''), '')}</div>` : ''}
@@ -721,6 +727,7 @@ function showSectionGroup(sec, ra) {
         const er = esc(ref.ref_text).replace(/[.*+?^${}()|[\]\\]/g,'\\$&');
         fullHtml = fullHtml.replace(new RegExp(er,'g'), `<span class="rl" data-ref="${esc(ref.ref_text)}">${esc(ref.ref_text)}</span>`);
       }
+      fullHtml = wrapBraceGroups(fullHtml);
       block.innerHTML = `<div class="sv-body">${fullHtml}</div>`;
     } else {
       block.innerHTML = `<div class="sv-body">${body||''}</div>`;
@@ -808,6 +815,14 @@ function renderDefs(defs) {
 
 // ── ユーティリティ ──────────────────────────────────
 function esc(s){return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');}
+
+// parser.pyが埋め込む｛グループマーカー(⬟...⬡)を視覚的な囲みに変換する
+// ※必ずesc()適用後の文字列に対して呼び出すこと
+function wrapBraceGroups(escapedHtml){
+  return escapedHtml
+    .replace(/\u2b1f\n?/g, '<div class="brace-group">')
+    .replace(/\u2b21\n?/g, '</div>');
+}
 function kl(k){return {H1:'大章',H2:'章',H3:'節',H4:'小見出し',H5:'項',DEF:'定義',BOX_TITLE:'囲み'}[k]||k;}
 
 init();
