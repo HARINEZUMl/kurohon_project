@@ -81,8 +81,7 @@ header h1{font-size:13px;font-weight:700;letter-spacing:.05em;white-space:nowrap
 .sv-card{background:var(--white);border:1px solid var(--amber);border-radius:var(--r);padding:16px;}
 .sv-title{font-size:15px;font-weight:700;margin-bottom:10px;}
 .sv-body{font-size:13px;line-height:1.9;white-space:pre-wrap;color:#333;}
-.brace-group{position:relative;margin:6px 0 6px 4px;padding:6px 10px;border-left:3px solid var(--amber,#c99a3c);background:rgba(201,154,60,.06);border-radius:0 4px 4px 0;}
-.brace-group::before{content:"代替表現";position:absolute;top:-9px;left:8px;font-size:10px;color:var(--amber,#c99a3c);background:var(--white,#fff);padding:0 4px;}
+.brace-fig{display:block;max-width:100%;height:auto;margin:4px 0;}
 
 /* PDFページビューア */
 .pdf-viewer{margin-top:16px;border:1px solid var(--line);border-radius:var(--r);overflow:hidden;background:#525659;}
@@ -224,6 +223,7 @@ header h1{font-size:13px;font-weight:700;letter-spacing:.05em;white-space:nowrap
 <script>
 const DB_URL  = 'data/index.db?v=' + Date.now();
 const PDF_URL = 'pdfs/航空保安業務処理規定第五管制業務処理規定.pdf';
+const FIGURES_BASE = 'figures/';
 
 // PDF.js設定
 let pdfDoc     = null;
@@ -816,12 +816,13 @@ function renderDefs(defs) {
 // ── ユーティリティ ──────────────────────────────────
 function esc(s){return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');}
 
-// parser.pyが埋め込む｛グループマーカー(⬟...⬡)を視覚的な囲みに変換する
+// parser.pyが埋め込む｛画像参照マーカー(⬟ファイル名⬡)を<img>タグに変換する
 // ※必ずesc()適用後の文字列に対して呼び出すこと
 function wrapBraceGroups(escapedHtml){
-  return escapedHtml
-    .replace(/\u2b1f\n?/g, '<div class="brace-group">')
-    .replace(/\u2b21\n?/g, '</div>');
+  return escapedHtml.replace(/\u2b1f([^\u2b1f\u2b21]+)\u2b21\n?/g, (m, filename) => {
+    const src = FIGURES_BASE + filename.trim();
+    return `<img class="brace-fig" src="${src}" alt="代替表現（画像）" loading="lazy">`;
+  });
 }
 function kl(k){return {H1:'大章',H2:'章',H3:'節',H4:'小見出し',H5:'項',DEF:'定義',BOX_TITLE:'囲み'}[k]||k;}
 
