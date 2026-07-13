@@ -82,6 +82,9 @@ header h1{font-size:13px;font-weight:700;letter-spacing:.05em;white-space:nowrap
 .sv-title{font-size:15px;font-weight:700;margin-bottom:10px;}
 .sv-body{font-size:13px;line-height:1.9;white-space:pre-wrap;color:#333;}
 .brace-fig{display:block;margin:4px 0;}
+.doc-table{border-collapse:collapse;margin:8px 0;font-size:12px;max-width:100%;display:block;overflow-x:auto;white-space:nowrap;}
+.doc-table th,.doc-table td{border:1px solid #ccc;padding:4px 8px;text-align:left;white-space:pre-wrap;vertical-align:top;}
+.doc-table th{background:#f2f2f2;font-weight:700;}
 
 /* PDFページビューア */
 .pdf-viewer{margin-top:16px;border:1px solid var(--line);border-radius:var(--r);overflow:hidden;background:#525659;}
@@ -596,7 +599,7 @@ function showSection(id) {
       const er = esc(ref.ref_text).replace(/[.*+?^${}()|[\]\\]/g,'\\$&');
       body = body.replace(new RegExp(er,'g'), `<span class="rl" data-ref="${esc(ref.ref_text)}">${esc(ref.ref_text)}</span>`);
     }
-    body = wrapBraceGroups(body);
+    body = wrapTableMarkers(wrapBraceGroups(body));
     const bc = [sec.parent_h1, sec.parent_h2, sec.parent_h3].filter(Boolean).join(' › ');
     ra.innerHTML = `
       <div class="sv">
@@ -631,7 +634,7 @@ function showSection(id) {
     const er = esc(ref.ref_text).replace(/[.*+?^${}()|[\]\\]/g,'\\$&');
     body = body.replace(new RegExp(er,'g'), `<span class="rl" data-ref="${esc(ref.ref_text)}">${esc(ref.ref_text)}</span>`);
   }
-  body = wrapBraceGroups(body);
+  body = wrapTableMarkers(wrapBraceGroups(body));
   const bc = [sec.parent_h1, sec.parent_h2, sec.parent_h3].filter(Boolean).join(' › ');
 
   ra.innerHTML = `
@@ -699,7 +702,7 @@ function showSectionGroup(sec, ra) {
       const er = esc(ref.ref_text).replace(/[.*+?^${}()|[\]\\]/g,'\\$&');
       body = body.replace(new RegExp(er,'g'), `<span class="rl" data-ref="${esc(ref.ref_text)}">${esc(ref.ref_text)}</span>`);
     }
-    body = wrapBraceGroups(body);
+    body = wrapTableMarkers(wrapBraceGroups(body));
 
     const block = document.createElement('div');
     block.style.cssText = 'margin-bottom:14px;padding-bottom:14px;border-bottom:1px solid var(--line);';
@@ -714,7 +717,7 @@ function showSectionGroup(sec, ra) {
         const er = esc(ref.ref_text).replace(/[.*+?^${}()|[\]\\]/g,'\\$&');
         fullHtml = fullHtml.replace(new RegExp(er,'g'), `<span class="rl" data-ref="${esc(ref.ref_text)}">${esc(ref.ref_text)}</span>`);
       }
-      fullHtml = wrapBraceGroups(fullHtml);
+      fullHtml = wrapTableMarkers(wrapBraceGroups(fullHtml));
       block.innerHTML = `
         <div style="font-size:13px;font-weight:700;color:var(--navy);margin:10px 0 6px;border-left:3px solid var(--amber);padding-left:8px">${esc(child.title||'')}</div>
         ${child.text ? `<div class="sv-body">${fullHtml.replace(esc(child.title||''), '')}</div>` : ''}
@@ -727,7 +730,7 @@ function showSectionGroup(sec, ra) {
         const er = esc(ref.ref_text).replace(/[.*+?^${}()|[\]\\]/g,'\\$&');
         fullHtml = fullHtml.replace(new RegExp(er,'g'), `<span class="rl" data-ref="${esc(ref.ref_text)}">${esc(ref.ref_text)}</span>`);
       }
-      fullHtml = wrapBraceGroups(fullHtml);
+      fullHtml = wrapTableMarkers(wrapBraceGroups(fullHtml));
       block.innerHTML = `<div class="sv-body">${fullHtml}</div>`;
     } else {
       block.innerHTML = `<div class="sv-body">${body||''}</div>`;
@@ -815,6 +818,37 @@ function renderDefs(defs) {
 
 // ── ユーティリティ ──────────────────────────────────
 function esc(s){return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');}
+
+// parser.pyが埋め込む表データマーカー(⬠JSON⬢)を<table>タグに変換する
+// ※必ずesc()適用後の文字列に対して呼び出すこと
+function wrapTableMarkers(escapedHtml){
+  return escapedHtml.replace(/\u2b20([^\u2b20\u2b22]+)\u2b22\n?/g, (m, jsonEsc) => {
+    let rows;
+    try {
+      // esc()でエスケープされたJSON文字列を元に戻してからパースする
+      const raw = jsonEsc
+        .replace(/&quot;/g, '"')
+        .replace(/&lt;/g, '<')
+        .replace(/&gt;/g, '>')
+        .replace(/&amp;/g, '&');
+      rows = JSON.parse(raw);
+    } catch(e) {
+      return m; // パース失敗時は元のまま(表示崩れを防ぐため何もしない)
+    }
+    if (!Array.isArray(rows) || rows.length === 0) return '';
+    let html = '<table class="doc-table">';
+    rows.forEach((row, ri) => {
+      html += '<tr>';
+      row.forEach(cell => {
+        const tag = ri === 0 ? 'th' : 'td';
+        html += `<${tag}>${esc(cell)}</${tag}>`;
+      });
+      html += '</tr>';
+    });
+    html += '</table>';
+    return html;
+  });
+}
 
 // parser.pyが埋め込む｛画像参照マーカー(⬟ファイル名|幅pt|高さpt⬡)を<img>タグに変換する
 // PDFのpt単位を標準的な画面換算(1pt=1.3333px)でCSSサイズに変換し、
