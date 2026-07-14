@@ -85,6 +85,7 @@ header h1{font-size:13px;font-weight:700;letter-spacing:.05em;white-space:nowrap
 .doc-table{border-collapse:collapse;margin:8px 0;font-size:12px;max-width:100%;display:block;overflow-x:auto;white-space:nowrap;}
 .doc-table th,.doc-table td{border:1px solid #ccc;padding:4px 8px;text-align:left;white-space:pre-wrap;vertical-align:top;}
 .doc-table th{background:#f2f2f2;font-weight:700;}
+.box-label{display:inline-block;border:1px solid #333;padding:3px 10px;margin:8px 0;font-size:13px;font-weight:700;text-align:center;}
 
 /* PDFページビューア */
 .pdf-viewer{margin-top:16px;border:1px solid var(--line);border-radius:var(--r);overflow:hidden;background:#525659;}
@@ -636,6 +637,9 @@ function showSection(id) {
   }
   body = wrapTableMarkers(wrapBraceGroups(body));
   const bc = [sec.parent_h1, sec.parent_h2, sec.parent_h3].filter(Boolean).join(' › ');
+  const titleHtml = sec.kind === 'BOX_TITLE'
+    ? `<div class="box-label">${esc(sec.title||'')}</div>`
+    : `<div class="sv-title">${esc(sec.title||'')}</div>`;
 
   ra.innerHTML = `
     <div class="sv">
@@ -646,7 +650,7 @@ function showSection(id) {
           <span class="rp">${esc(sec.doc_page_id||'p'+sec.physical_page)}</span>
         </div>
         ${bc?`<div class="rbc" style="margin-bottom:6px">${esc(bc)}</div>`:''}
-        <div class="sv-title">${esc(sec.title||'')}</div>
+        ${titleHtml}
         <div class="sv-body">${body||'<span style="color:#999">（本文なし）</span>'}</div>
       </div>
       <div id="pdf-viewer-area" style="display:none"></div>
@@ -672,7 +676,7 @@ function showSectionGroup(sec, ra) {
     const s = ALL[i];
     const slevel = levelOrder[s.kind] || 9;
     if (slevel <= myLevel && ['H1','H2','H3'].includes(s.kind)) break;
-    if (!['BOX_TITLE'].includes(s.kind)) children.push(s);
+    children.push(s);
   }
 
   const bc = [sec.parent_h1, sec.parent_h2, sec.parent_h3].filter(Boolean).join(' › ');
@@ -732,6 +736,16 @@ function showSectionGroup(sec, ra) {
       }
       fullHtml = wrapTableMarkers(wrapBraceGroups(fullHtml));
       block.innerHTML = `<div class="sv-body">${fullHtml}</div>`;
+    } else if (child.kind === 'BOX_TITLE') {
+      // 元のPDFで四角囲みされているラベル(例:「後方乱気流管制方式」)を
+      // 実際に枠線付きで表示し、PDFと同様の見た目を再現する
+      let boxHtml = esc(child.title || '');
+      const boxRefs = dbQuery('SELECT * FROM references_table WHERE from_block_id=?', [Number(child.id)]);
+      for (const ref of boxRefs) {
+        const er = esc(ref.ref_text).replace(/[.*+?^${}()|[\]\\]/g,'\\$&');
+        boxHtml = boxHtml.replace(new RegExp(er,'g'), `<span class="rl" data-ref="${esc(ref.ref_text)}">${esc(ref.ref_text)}</span>`);
+      }
+      block.innerHTML = `<div class="box-label">${boxHtml}</div>${body ? `<div class="sv-body">${body}</div>` : ''}`;
     } else {
       block.innerHTML = `<div class="sv-body">${body||''}</div>`;
     }
