@@ -1,0 +1,11 @@
+# Python
+.venv/
+__pycache__/
+*.pyc
+
+# OS
+Thumbs.db
+desktop.ini
+
+# エディタ
+.vscode/
