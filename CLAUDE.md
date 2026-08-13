@@ -26,9 +26,17 @@
 
 ## 環境
 
-- Python 3、pdfplumber、SQLite
-- 底本: `pdfs/` 配下のPDF（384ページ）
-- 出力: `data/index.db`、`figures/`、`out/`
+- Windows / PowerShell
+- Python 3.12（`py -3.12` で起動）、仮想環境は `.venv`
+- pdfplumber、SQLite
+- 底本: `pdfs/kurohon_148.pdf`（384ページ）
+
+セッション開始時:
+
+```powershell
+cd C:\Users\satos\dev\kurohon_project
+.\.venv\Scripts\Activate.ps1
+```
 
 パッケージの追加が必要な場合は、理由とともに報告してから導入する。
 
