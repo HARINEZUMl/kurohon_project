@@ -9,3 +9,6 @@ desktop.ini
 
 # エディタ
 .vscode/
+
+# 生成物
+out/
