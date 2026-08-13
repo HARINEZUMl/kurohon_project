@@ -49,6 +49,14 @@ for _i in range(26):
 # 本文への連結対象から外す（属性としての分離はattributes.pyが行う）。
 HEADING_LINE_PATTERN = re.compile(r"^【[^】]*】$")
 
+# NOTE（SPEC 2.2, 3.10）。「注」に番号（全角数字）が続く場合がある。
+# 階層記号と同様、実測データでは本文との間に実在の空白を1つ挟む。
+NOTE_PATTERN = re.compile(r"注([０-９]+)?")
+
+# PHRASE（SPEC 2.2, 2.8）。「★」に邦文が直接続く（間に空白を挟まない）。
+# ｂ199実測: '★' と直後の文字の間に空白文字は無い（x座標が隙間なく連続）。
+PHRASE_MARKER = "★"
+
 
 @dataclass
 class Line:
@@ -56,13 +64,15 @@ class Line:
     bottom: float
     text: str
     physical_page: int = 0
+    x0: float = 0.0
 
 
 @dataclass
 class Node:
-    marker_type: str
-    marker: str
-    marker_norm: str
+    node_type: str = "SECTION"  # "SECTION" | "NOTE" | "PHRASE"
+    marker_type: str = ""
+    marker: str = ""
+    marker_norm: str = ""
     text_raw: str = ""
     parent: "Node | None" = None
     children: list = field(default_factory=list)
@@ -81,6 +91,14 @@ class Node:
     heading: str = ""
     heading_norm: str = ""
     labels: list = field(default_factory=list)
+    # NOTE専用（SPEC 3.10）。係り先の判定規則は未決（SPEC 2.16 U1）のため、
+    # 現状はすべて confidence="unresolved", attached_to=None として記録する。
+    confidence: str = ""
+    indent_x: float = 0.0
+    attached_to: "Node | None" = None
+    # PHRASE専用（SPEC 2.8, 3.7）。邦文と英文の対。
+    ja_raw: str = ""
+    en_raw: str = ""
 
 
 def assemble_lines(chars: list, physical_page: int = 0) -> list:
@@ -110,7 +128,9 @@ def assemble_lines(chars: list, physical_page: int = 0) -> list:
     for b in sorted(buckets, key=lambda b: b["top"]):
         ordered = sorted(b["chars"], key=lambda c: c.x0)
         text = "".join(c.text for c in ordered)
-        lines.append(Line(top=b["top"], bottom=b["bottom"], text=text, physical_page=physical_page))
+        lines.append(
+            Line(top=b["top"], bottom=b["bottom"], text=text, physical_page=physical_page, x0=ordered[0].x0)
+        )
     return lines
 
 
@@ -187,6 +207,16 @@ def build_forest(lines: list) -> tuple:
     - all_nodes: 生成順（＝文書上の出現順）に並んだ全ノードのフラットな列。
       attributes.pyが見出し・ラベルを「直後に現れるノード」へ割り当てる際、
       木をたどらずに出現順で参照するために使う。
+
+    NOTE（注・注N）とPHRASE（★）は階層記号を持たず、`stack`（SECTIONの
+    段管理）には参加しない。現在開いている最も深いSECTION（stack[-1]）の
+    子として、seqを共有しながら追加する（SPEC 2.4「兄弟内順序は紙面上の
+    出現順」。図表の例（ア=1,イ=2,表=3,表=4）と同じ扱い）。
+
+    PHRASEは邦文行（★で始まる）と、直後に続く英文行の対からなる（SPEC 2.8）。
+    邦文はその行だけから取り、以降の非マーカー行は英文として連結する
+    （英文が複数行に折り返す場合を扱うため）。邦文自体が複数行に折り返す
+    実例は未確認であり、その場合は正しく扱えない（既知の限界）。
     """
     confirmed_roots: list = []
     unconfirmed_roots: list = []
@@ -195,6 +225,15 @@ def build_forest(lines: list) -> tuple:
     orphan_lines: list = []
     pending_headings: list = []
     current_leaf: Node | None = None
+    current_field = "text_raw"  # current_leaf のどの属性に継続行を連結するか
+
+    def append_child(node: Node) -> None:
+        parent = stack[-1] if stack else None
+        node.parent = parent
+        node.depth = parent.depth + 1 if parent else 0
+        node.seq = len(parent.children) + 1
+        parent.children.append(node)
+        all_nodes.append(node)
 
     for line in lines:
         if not line.text.strip():
@@ -206,11 +245,52 @@ def build_forest(lines: list) -> tuple:
             pending_headings.append((line.physical_page, line.top, line.text.strip()))
             continue
 
+        note_match = NOTE_PATTERN.match(line.text)
+        note_remainder = line.text[note_match.end():] if note_match else None
+        if note_match and (not note_remainder or note_remainder[0].isspace()):
+            if not stack:
+                # 所属先のSECTIONがこのページ範囲内に無い。確定できないため
+                # 本文と同じ扱いで報告するにとどめる（CLAUDE.md 原則5）。
+                orphan_lines.append(line.text)
+                continue
+            raw = note_match.group(0)
+            node = Node(
+                node_type="NOTE",
+                marker_type="note",
+                marker=raw,
+                marker_norm=raw.translate(_FULLWIDTH_TO_HALF),
+                physical_page=line.physical_page,
+                top=line.top,
+                indent_x=line.x0,
+                # 係り先の判定規則は未決（SPEC 2.16 U1）。現状は判定を行わず、
+                # 常にunresolvedとして記録する（SPEC 3.10の制約：attached_toが
+                # 空のときconfidenceはunresolvedでなければならない）。
+                confidence="unresolved",
+            )
+            append_child(node)
+            node.text_raw += note_remainder
+            current_leaf = node
+            current_field = "text_raw"
+            continue
+
+        if line.text.startswith(PHRASE_MARKER):
+            if not stack:
+                orphan_lines.append(line.text)
+                continue
+            node = Node(node_type="PHRASE", physical_page=line.physical_page, top=line.top)
+            node.ja_raw = line.text[len(PHRASE_MARKER):]
+            append_child(node)
+            current_leaf = node
+            current_field = "en_raw"
+            continue
+
         markers, remainder = parse_marker_chain(line.text)
 
         if not markers:
             if current_leaf is None:
                 orphan_lines.append(line.text)
+            elif current_field == "en_raw":
+                current_leaf.en_raw += line.text
             else:
                 # 行の折り返しによる改行は除去し、一続きの文にする（SPEC 2.10）。
                 current_leaf.text_raw += line.text
@@ -240,6 +320,7 @@ def build_forest(lines: list) -> tuple:
                 target.append(node)
             stack.append(node)
             current_leaf = node
+            current_field = "text_raw"
             all_nodes.append(node)
 
         # 記号列の直後（最後の記号の子ノード）に本文が続く。
@@ -253,12 +334,22 @@ def format_tree(nodes: list, indent: int = 0) -> str:
     out = []
     for node in nodes:
         prefix = "  " * indent
-        out.append(f"{prefix}[{node.marker_type}] {node.marker} (seq={node.seq}, depth={node.depth})")
-        if node.heading:
-            out.append(f"{prefix}    heading: {node.heading!r}")
-        if node.labels:
-            out.append(f"{prefix}    labels: {node.labels!r}")
-        if node.text_raw:
-            out.append(f"{prefix}    text_raw: {node.text_raw!r}")
+        if node.node_type == "NOTE":
+            out.append(f"{prefix}[NOTE] {node.marker} (seq={node.seq}, depth={node.depth})")
+            out.append(f"{prefix}    confidence: {node.confidence!r} indent_x: {node.indent_x:.1f}")
+            if node.text_raw:
+                out.append(f"{prefix}    text_raw: {node.text_raw!r}")
+        elif node.node_type == "PHRASE":
+            out.append(f"{prefix}[PHRASE] (seq={node.seq}, depth={node.depth})")
+            out.append(f"{prefix}    ja_raw: {node.ja_raw!r}")
+            out.append(f"{prefix}    en_raw: {node.en_raw!r}")
+        else:
+            out.append(f"{prefix}[{node.marker_type}] {node.marker} (seq={node.seq}, depth={node.depth})")
+            if node.heading:
+                out.append(f"{prefix}    heading: {node.heading!r}")
+            if node.labels:
+                out.append(f"{prefix}    labels: {node.labels!r}")
+            if node.text_raw:
+                out.append(f"{prefix}    text_raw: {node.text_raw!r}")
         out.append(format_tree(node.children, indent + 1))
     return "\n".join(x for x in out if x)

@@ -36,15 +36,21 @@ def normalize_heading(text: str) -> str:
     return f"【{inner}】"
 
 
-def _find_next_node(all_nodes: list, physical_page: int, top: float):
+def _find_next_node(all_nodes: list, physical_page: int, top: float, node_type: str | None = None):
     """(physical_page, top) の直後に生成されたノードを、出現順の列から探す。
 
     見出し・ラベルは、対象となる階層記号の直前に印刷されている
     （SPEC 2.5「見出し→ラベル→階層記号」）。structure.py が記録した
     ノード生成順（＝文書上の出現順）の中から、同じページでtopが最小の
     ノードを探すことで「直後の記号列」を特定する。
+
+    node_type を指定した場合、その種別のノードに限って候補とする。
+    ラベルの対象はSECTIONに限られる（SPEC 2.6）ため、直後がNOTE/PHRASE
+    だった場合にそれらへ誤って付与しないようにする。
     """
     candidates = [n for n in all_nodes if n.physical_page == physical_page and n.top > top]
+    if node_type is not None:
+        candidates = [n for n in candidates if n.node_type == node_type]
     if not candidates:
         return None
     return min(candidates, key=lambda n: n.top)
@@ -57,7 +63,7 @@ def assign_headings(all_nodes: list, pending_headings: list) -> list:
     """
     unresolved = []
     for physical_page, top, text in pending_headings:
-        target = _find_next_node(all_nodes, physical_page, top)
+        target = _find_next_node(all_nodes, physical_page, top, node_type="SECTION")
         if target is None or target.marker_type != "paren_number":
             unresolved.append((physical_page, top, text, target))
             continue
@@ -79,7 +85,7 @@ def assign_labels(all_nodes: list, box_regions: list) -> list:
         if not region.text:
             unresolved.append((physical_page, region, "枠内にテキストが無い"))
             continue
-        target = _find_next_node(all_nodes, physical_page, region.bottom)
+        target = _find_next_node(all_nodes, physical_page, region.bottom, node_type="SECTION")
         if target is None:
             unresolved.append((physical_page, region, "直後のノードが見つからない"))
             continue
