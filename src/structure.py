@@ -63,6 +63,11 @@ class Node:
     children: list = field(default_factory=list)
     seq: int = 0
     depth: int = 0
+    # parent is None のノードにのみ意味を持つ。SPEC 2.1「第1段（roman）のみが根」
+    # に一致するかどうか。False は「このページ単独処理では親を確定できなかった」
+    # ことを意味し、真の根であると確定したわけではない（複数ページを跨いで処理
+    # すれば親が見つかる可能性がある）。
+    is_confirmed_root: bool = False
 
 
 def assemble_lines(chars: list) -> list:
@@ -150,11 +155,20 @@ def build_forest(lines: list) -> tuple:
     段の省略・非隣接段の併記があっても、段の順序のみで親子を判定する
     （x座標・記号の個数や隣接性を前提としない）。
 
-    戻り値: (roots, orphan_lines)。orphan_lines は、最初の階層記号が
-    出現する前に存在した行（このページ単独では所属先を確定できないテキスト）。
-    確定できないため木には含めず、そのまま報告する（CLAUDE.md 原則5）。
+    SPEC 2.1「第1段（roman）のみが根」に対応するため、marker_type が
+    roman である根と、それ以外の根を区別して返す。後者は、このページ単独
+    処理では親が見つからなかっただけであり、真の根であると確定したわけでは
+    ない（前ページに続きがある可能性がある）。両者を区別せずに扱うと、
+    複数ページを統合した際に誤ったノードが根として混入する
+    （CLAUDE.md 原則5：確定できないものを確定させない）。
+
+    戻り値: (confirmed_roots, unconfirmed_roots, orphan_lines)。
+    orphan_lines は、最初の階層記号が出現する前に存在した行（このページ単独
+    では所属先を確定できないテキスト）。確定できないため木には含めず、
+    そのまま報告する。
     """
-    roots: list = []
+    confirmed_roots: list = []
+    unconfirmed_roots: list = []
     stack: list = []
     orphan_lines: list = []
     current_leaf: Node | None = None
@@ -190,8 +204,10 @@ def build_forest(lines: list) -> tuple:
                 node.seq = len(parent.children) + 1
                 parent.children.append(node)
             else:
-                node.seq = len(roots) + 1
-                roots.append(node)
+                node.is_confirmed_root = mtype == "roman"
+                target = confirmed_roots if node.is_confirmed_root else unconfirmed_roots
+                node.seq = len(target) + 1
+                target.append(node)
             stack.append(node)
             current_leaf = node
 
@@ -199,7 +215,7 @@ def build_forest(lines: list) -> tuple:
         # 階層記号と本文の間の空白は除去しない（SPEC 2.10）。
         current_leaf.text_raw += remainder
 
-    return roots, orphan_lines
+    return confirmed_roots, unconfirmed_roots, orphan_lines
 
 
 def format_tree(nodes: list, indent: int = 0) -> str:
