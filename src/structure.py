@@ -57,6 +57,13 @@ NOTE_PATTERN = re.compile(r"注([０-９]+)?")
 # ｂ199実測: '★' と直後の文字の間に空白文字は無い（x座標が隙間なく連続）。
 PHRASE_MARKER = "★"
 
+# 図番号のキャプション（例: "(２)－１"）単独の行。図の本体（curve/rect）とは
+# 別に、キャプション文字は本文の文字列として現れる。行全体がこの形なら
+# キャプション行とみなし、本文への連結対象から外す（figures.pyが図ノードに
+# 割り当てる）。本文中の参照表記「((２)－４図)」とは末尾の「図)」の有無で
+# 区別され、混同しない。
+CAPTION_LINE_PATTERN = re.compile(r"^\([０-９]+\)－[０-９]+$")
+
 
 @dataclass
 class Line:
@@ -99,6 +106,24 @@ class Node:
     # PHRASE専用（SPEC 2.8, 3.7）。邦文と英文の対。
     ja_raw: str = ""
     en_raw: str = ""
+    # FIGURE専用（SPEC 3.5）。所属（parent）はfigures.py段階では未確定のまま
+    # （SPEC 2.7「構築の順序」。所属確定は参照解決の後＝stage9）。
+    number: str = ""
+    number_norm: str = ""
+    image_path: str = ""
+    # TABLE専用（SPEC 3.6）。cells は行の配列の配列（JSON化前のPython値）。
+    cells: list = field(default_factory=list)
+    header_rows: int = 0
+    # FIGURE/TABLE共通のページ内座標（bbox）。topは既存フィールドを流用する。
+    x0: float = 0.0
+    x1: float = 0.0
+    bottom: float = 0.0
+
+
+# 同じy位置にあっても、これ以上x方向に離れていれば別々の行（別の印刷要素）
+# とみなす。実測した通常の字間・記号と本文の間隔は最大でも11pt程度であるのに
+# 対し、p199の図キャプション2つ（同じtopでx=277.8と457.3）は179pt離れている。
+LINE_SPLIT_GAP = 30.0
 
 
 def assemble_lines(chars: list, physical_page: int = 0) -> list:
@@ -106,7 +131,10 @@ def assemble_lines(chars: list, physical_page: int = 0) -> list:
 
     厳密な等値ではなく重なり判定を使うのは、1pt程度ずれて取得される行が
     存在するため（CLAUDE.md「〔例〕の1文目は同じ行にある」）。
-    x座標による領域分割（波括弧対応）はp200では不要なため未実装。
+
+    y方向でグループ化したのち、x方向に大きく離れた文字群はさらに別の行へ
+    分割する。図のキャプションのように、同じy位置に印字されているが
+    水平方向には無関係な複数の要素が存在するため（p199実測）。
     """
     buckets: list = []  # each: {"top", "bottom", "chars": [...]}
     for c in sorted(chars, key=lambda c: (c.top, c.x0)):
@@ -127,9 +155,18 @@ def assemble_lines(chars: list, physical_page: int = 0) -> list:
     lines = []
     for b in sorted(buckets, key=lambda b: b["top"]):
         ordered = sorted(b["chars"], key=lambda c: c.x0)
-        text = "".join(c.text for c in ordered)
+        segment = [ordered[0]]
+        for c in ordered[1:]:
+            if c.x0 - segment[-1].x1 > LINE_SPLIT_GAP:
+                text = "".join(ch.text for ch in segment)
+                lines.append(
+                    Line(top=b["top"], bottom=b["bottom"], text=text, physical_page=physical_page, x0=segment[0].x0)
+                )
+                segment = []
+            segment.append(c)
+        text = "".join(ch.text for ch in segment)
         lines.append(
-            Line(top=b["top"], bottom=b["bottom"], text=text, physical_page=physical_page, x0=ordered[0].x0)
+            Line(top=b["top"], bottom=b["bottom"], text=text, physical_page=physical_page, x0=segment[0].x0)
         )
     return lines
 
@@ -195,7 +232,8 @@ def build_forest(lines: list) -> tuple:
     複数ページを統合した際に誤ったノードが根として混入する
     （CLAUDE.md 原則5：確定できないものを確定させない）。
 
-    戻り値: (confirmed_roots, unconfirmed_roots, orphan_lines, pending_headings, all_nodes)。
+    戻り値: (confirmed_roots, unconfirmed_roots, orphan_lines, pending_headings,
+    pending_captions, all_nodes)。
 
     - orphan_lines: 最初の階層記号が出現する前に存在した行（このページ単独
       では所属先を確定できないテキスト）。確定できないため木には含めず、
@@ -204,6 +242,8 @@ def build_forest(lines: list) -> tuple:
       タプル）。見出しはノードではなく属性のため（SPEC 2.2「種別に含めない
       もの」）、ここでは本文に連結せず脇に置くだけにとどめる。直後のノードへの
       割り当てと祖先解決はattributes.pyの役割（SPEC 2.5, CLAUDE.md属性の付与）。
+    - pending_captions: 図番号キャプション単独の行（(physical_page, top, x0,
+      text) のタプル）。図に対応付ける処理はfigures.pyの役割（stage7）。
     - all_nodes: 生成順（＝文書上の出現順）に並んだ全ノードのフラットな列。
       attributes.pyが見出し・ラベルを「直後に現れるノード」へ割り当てる際、
       木をたどらずに出現順で参照するために使う。
@@ -224,6 +264,7 @@ def build_forest(lines: list) -> tuple:
     stack: list = []
     orphan_lines: list = []
     pending_headings: list = []
+    pending_captions: list = []
     current_leaf: Node | None = None
     current_field = "text_raw"  # current_leaf のどの属性に継続行を連結するか
 
@@ -243,6 +284,10 @@ def build_forest(lines: list) -> tuple:
         heading_match = HEADING_LINE_PATTERN.match(line.text.strip())
         if heading_match:
             pending_headings.append((line.physical_page, line.top, line.text.strip()))
+            continue
+
+        if CAPTION_LINE_PATTERN.match(line.text.strip()):
+            pending_captions.append((line.physical_page, line.top, line.x0, line.text.strip()))
             continue
 
         note_match = NOTE_PATTERN.match(line.text)
@@ -327,7 +372,7 @@ def build_forest(lines: list) -> tuple:
         # 階層記号と本文の間の空白は除去しない（SPEC 2.10）。
         current_leaf.text_raw += remainder
 
-    return confirmed_roots, unconfirmed_roots, orphan_lines, pending_headings, all_nodes
+    return confirmed_roots, unconfirmed_roots, orphan_lines, pending_headings, pending_captions, all_nodes
 
 
 def format_tree(nodes: list, indent: int = 0) -> str:
@@ -343,10 +388,23 @@ def format_tree(nodes: list, indent: int = 0) -> str:
             out.append(f"{prefix}[PHRASE] (seq={node.seq}, depth={node.depth})")
             out.append(f"{prefix}    ja_raw: {node.ja_raw!r}")
             out.append(f"{prefix}    en_raw: {node.en_raw!r}")
+        elif node.node_type == "FIGURE":
+            out.append(f"{prefix}[FIGURE] {node.number} (seq={node.seq})")
+            out.append(f"{prefix}    number_norm: {node.number_norm!r} image_path: {node.image_path!r}")
+            out.append(
+                f"{prefix}    page={node.physical_page} bbox=({node.x0:.1f},{node.top:.1f},{node.x1:.1f},{node.bottom:.1f})"
+            )
+        elif node.node_type == "TABLE":
+            out.append(f"{prefix}[TABLE] (seq={node.seq}) header_rows={node.header_rows}")
+            out.append(
+                f"{prefix}    page={node.physical_page} bbox=({node.x0:.1f},{node.top:.1f},{node.x1:.1f},{node.bottom:.1f})"
+            )
+            for row in node.cells:
+                out.append(f"{prefix}    {row!r}")
         else:
             out.append(f"{prefix}[{node.marker_type}] {node.marker} (seq={node.seq}, depth={node.depth})")
             if node.heading:
-                out.append(f"{prefix}    heading: {node.heading!r}")
+                out.append(f"{prefix}    heading: {node.heading!r} heading_norm: {node.heading_norm!r}")
             if node.labels:
                 out.append(f"{prefix}    labels: {node.labels!r}")
             if node.text_raw:

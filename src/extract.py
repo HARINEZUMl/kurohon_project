@@ -175,6 +175,12 @@ def _region_text(page, region: "Region") -> str:
 
     ラベルの本文（囲みの文字列）を得るために使う。表・図はテキストを
     必要としないため呼ばない。
+
+    ソートキーのtopは8pt単位に丸めてからx0を比較する。半角英字と全角文字は
+    ベースラインが微妙にずれる（1pt未満）ことがあり、topをそのまま比較すると
+    同じ行内でも読み順が入れ替わりうるため（figures.pyで実測した同種の問題、
+    「グループA機」が「グループ機A」になる不具合）、行の高さ（18pt程度）より
+    十分小さい単位でまとめて吸収する。
     """
     inside = [
         c
@@ -182,7 +188,7 @@ def _region_text(page, region: "Region") -> str:
         if region.x0 <= (c["x0"] + c["x1"]) / 2 <= region.x1
         and region.top <= (c["top"] + c["bottom"]) / 2 <= region.bottom
     ]
-    inside.sort(key=lambda c: (c["top"], c["x0"]))
+    inside.sort(key=lambda c: (round(c["top"] / 8), c["x0"]))
     return "".join(c["text"] for c in inside).strip()
 
 
