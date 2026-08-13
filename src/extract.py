@@ -49,6 +49,7 @@ class Region:
     top: float
     bottom: float
     rects: list = field(default_factory=list)
+    text: str = ""  # "box" のみ設定。ラベル文字列（attributes.py がSECTIONに割り当てる）
 
     def contains_point(self, x: float, y: float, pad: float = 0.0) -> bool:
         return (self.x0 - pad <= x <= self.x1 + pad) and (self.top - pad <= y <= self.bottom + pad)
@@ -169,6 +170,22 @@ def detect_figure_regions(page, thick_rects: list) -> list:
     return regions
 
 
+def _region_text(page, region: "Region") -> str:
+    """矩形領域内の文字を、原本の表記のまま連結する（枠内テキストの取得用）。
+
+    ラベルの本文（囲みの文字列）を得るために使う。表・図はテキストを
+    必要としないため呼ばない。
+    """
+    inside = [
+        c
+        for c in page.chars
+        if region.x0 <= (c["x0"] + c["x1"]) / 2 <= region.x1
+        and region.top <= (c["top"] + c["bottom"]) / 2 <= region.bottom
+    ]
+    inside.sort(key=lambda c: (c["top"], c["x0"]))
+    return "".join(c["text"] for c in inside).strip()
+
+
 def detect_regions(page) -> tuple:
     """表→囲み→図の順に領域を確定する。波括弧はこのページでは未実装（下記参照）。
 
@@ -199,7 +216,10 @@ def detect_regions(page) -> tuple:
         x1 = max(r["x1"] for r in members)
         top = min(r["top"] for r in members)
         bottom = max(r["bottom"] for r in members)
-        regions.append(Region(kind=kind, x0=x0, x1=x1, top=top, bottom=bottom, rects=members))
+        region = Region(kind=kind, x0=x0, x1=x1, top=top, bottom=bottom, rects=members)
+        if kind == "box":
+            region.text = _region_text(page, region)
+        regions.append(region)
 
     regions.extend(detect_figure_regions(page, thick_rects))
 

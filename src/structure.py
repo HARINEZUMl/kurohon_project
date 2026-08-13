@@ -45,12 +45,17 @@ for _i in range(26):
     _FULLWIDTH_TO_HALF[ord("ａ") + _i] = ord("a") + _i
     _FULLWIDTH_TO_HALF[ord("Ａ") + _i] = ord("A") + _i
 
+# 【】見出し単独の行（SPEC 2.5）。行全体がこの形なら見出し行とみなし、
+# 本文への連結対象から外す（属性としての分離はattributes.pyが行う）。
+HEADING_LINE_PATTERN = re.compile(r"^【[^】]*】$")
+
 
 @dataclass
 class Line:
     top: float
     bottom: float
     text: str
+    physical_page: int = 0
 
 
 @dataclass
@@ -68,9 +73,17 @@ class Node:
     # ことを意味し、真の根であると確定したわけではない（複数ページを跨いで処理
     # すれば親が見つかる可能性がある）。
     is_confirmed_root: bool = False
+    # 木構築時の位置（この記号列の行の座標）。attributes.py が見出し・ラベルを
+    # 「直後に現れるノード」として割り当てる際の手がかりに使う。
+    physical_page: int = 0
+    top: float = 0.0
+    # 以下はstructure.py段階では常に空。attributes.pyが付与する（SPEC 2.5, 2.6）。
+    heading: str = ""
+    heading_norm: str = ""
+    labels: list = field(default_factory=list)
 
 
-def assemble_lines(chars: list) -> list:
+def assemble_lines(chars: list, physical_page: int = 0) -> list:
     """文字要素をy方向の重なりでグループ化して行を組み立てる。
 
     厳密な等値ではなく重なり判定を使うのは、1pt程度ずれて取得される行が
@@ -97,7 +110,7 @@ def assemble_lines(chars: list) -> list:
     for b in sorted(buckets, key=lambda b: b["top"]):
         ordered = sorted(b["chars"], key=lambda c: c.x0)
         text = "".join(c.text for c in ordered)
-        lines.append(Line(top=b["top"], bottom=b["bottom"], text=text))
+        lines.append(Line(top=b["top"], bottom=b["bottom"], text=text, physical_page=physical_page))
     return lines
 
 
@@ -162,20 +175,35 @@ def build_forest(lines: list) -> tuple:
     複数ページを統合した際に誤ったノードが根として混入する
     （CLAUDE.md 原則5：確定できないものを確定させない）。
 
-    戻り値: (confirmed_roots, unconfirmed_roots, orphan_lines)。
-    orphan_lines は、最初の階層記号が出現する前に存在した行（このページ単独
-    では所属先を確定できないテキスト）。確定できないため木には含めず、
-    そのまま報告する。
+    戻り値: (confirmed_roots, unconfirmed_roots, orphan_lines, pending_headings, all_nodes)。
+
+    - orphan_lines: 最初の階層記号が出現する前に存在した行（このページ単独
+      では所属先を確定できないテキスト）。確定できないため木には含めず、
+      そのまま報告する。
+    - pending_headings: 【】見出し単独の行（(physical_page, top, text) の
+      タプル）。見出しはノードではなく属性のため（SPEC 2.2「種別に含めない
+      もの」）、ここでは本文に連結せず脇に置くだけにとどめる。直後のノードへの
+      割り当てと祖先解決はattributes.pyの役割（SPEC 2.5, CLAUDE.md属性の付与）。
+    - all_nodes: 生成順（＝文書上の出現順）に並んだ全ノードのフラットな列。
+      attributes.pyが見出し・ラベルを「直後に現れるノード」へ割り当てる際、
+      木をたどらずに出現順で参照するために使う。
     """
     confirmed_roots: list = []
     unconfirmed_roots: list = []
+    all_nodes: list = []
     stack: list = []
     orphan_lines: list = []
+    pending_headings: list = []
     current_leaf: Node | None = None
 
     for line in lines:
         if not line.text.strip():
             # 空白のみの行（枠外にはみ出した文字の空白等）は内容を持たないため無視する。
+            continue
+
+        heading_match = HEADING_LINE_PATTERN.match(line.text.strip())
+        if heading_match:
+            pending_headings.append((line.physical_page, line.top, line.text.strip()))
             continue
 
         markers, remainder = parse_marker_chain(line.text)
@@ -199,6 +227,8 @@ def build_forest(lines: list) -> tuple:
                 marker_norm=normalize_marker(mtype, raw),
                 parent=parent,
                 depth=(parent.depth + 1 if parent else 0),
+                physical_page=line.physical_page,
+                top=line.top,
             )
             if parent is not None:
                 node.seq = len(parent.children) + 1
@@ -210,12 +240,13 @@ def build_forest(lines: list) -> tuple:
                 target.append(node)
             stack.append(node)
             current_leaf = node
+            all_nodes.append(node)
 
         # 記号列の直後（最後の記号の子ノード）に本文が続く。
         # 階層記号と本文の間の空白は除去しない（SPEC 2.10）。
         current_leaf.text_raw += remainder
 
-    return confirmed_roots, unconfirmed_roots, orphan_lines
+    return confirmed_roots, unconfirmed_roots, orphan_lines, pending_headings, all_nodes
 
 
 def format_tree(nodes: list, indent: int = 0) -> str:
@@ -223,6 +254,10 @@ def format_tree(nodes: list, indent: int = 0) -> str:
     for node in nodes:
         prefix = "  " * indent
         out.append(f"{prefix}[{node.marker_type}] {node.marker} (seq={node.seq}, depth={node.depth})")
+        if node.heading:
+            out.append(f"{prefix}    heading: {node.heading!r}")
+        if node.labels:
+            out.append(f"{prefix}    labels: {node.labels!r}")
         if node.text_raw:
             out.append(f"{prefix}    text_raw: {node.text_raw!r}")
         out.append(format_tree(node.children, indent + 1))
