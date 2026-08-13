@@ -7,17 +7,29 @@
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 
-# ページ下部のラベル（SPEC 2.11）は本文と無関係な組版要素であり、木構築の対象外。
-# 複数ページで実測した位置（top≈780.2〜780.3）に基づく固定の足切り値。
-FOOTER_TOP_THRESHOLD = 770.0
+# SPEC 2.11 のページラベル書式。座標は改正のたびに変わりうるため根拠にせず、
+# 書式に一致するかどうかで判定する。
+_ROMAN = "ⅠⅡⅢⅣⅤⅥⅦ"
+PAGE_LABEL_THREE_PART = re.compile(f"^\\(([{_ROMAN}])\\)－(\\d+)－(\\d+)$")
+PAGE_LABEL_TWO_PART = re.compile(f"^([{_ROMAN}])－(\\d+)$")
+
+# ページ下部表記の候補として拾う、最下端からの許容誤差（同一行かどうかの判定用）。
+# 本文の行組み立て（structure.py）とは別に、フッタ候補を1行分だけ集めるための値。
+FOOTER_LINE_TOLERANCE = 2.0
 
 # 隣接する矩形断片を1つの枠として束ねる許容誤差（CLAUDE.md「ラベルの矩形は分解されて取得される」）。
 RECT_CLUSTER_TOLERANCE = 2.0
 
 # 枠内の罫線位置をクラスタリングする際の許容誤差。
 EDGE_CLUSTER_TOLERANCE = 1.0
+
+# 罫線（表・囲みの枠線）とみなす太さの上限。実測した罫線は太くても1.6pt程度
+# （角の重なり）であるのに対し、p199の図中に見られる塗りつぶし矩形は最小でも
+# 9pt以上ある。この閾値で「線」と「塗りつぶされた図形」を区別する。
+LINE_THICKNESS_MAX = 3.0
 
 
 @dataclass
@@ -31,7 +43,7 @@ class Char:
 
 @dataclass
 class Region:
-    kind: str  # "table" | "box"
+    kind: str  # "table" | "box" | "figure"
     x0: float
     x1: float
     top: float
@@ -124,15 +136,57 @@ def _classify_cluster(members: list) -> str | None:
     return None
 
 
+def _is_thin(r: dict) -> bool:
+    """罫線（表・囲みの枠線）らしい細さかどうか。"""
+    return min(r["x1"] - r["x0"], r["bottom"] - r["top"]) <= LINE_THICKNESS_MAX
+
+
+def detect_figure_regions(page, thick_rects: list) -> list:
+    """図の領域を検出する（除外のみ。FIGUREノードの生成はfigures.pyの範囲）。
+
+    ラスタ画像は page.images からそのまま矩形領域とする。ベクター図形は、
+    curve と塗りつぶし矩形（罫線ではない太さの rect、引数 thick_rects）を
+    まとめてクラスタリングする。p199の図は、輪郭をcurveで、塗りつぶし部分を
+    rectで描いており、両者が空間的に重なっているため一体として扱う必要がある。
+
+    波括弧（p158, SPEC 2.8）も curve で描画されるため、この判定ではまだ
+    区別できていない。p199の図は本文から離れた孤立領域として出現するが、
+    波括弧は行内に埋め込まれるため、単純なbboxクラスタリングでは誤って
+    本文行を巻き込む可能性がある。p158着手時に、本文行との位置関係も含めて
+    再検討すること（現時点では未検証の既知の限界）。
+    """
+    regions = []
+    for im in page.images:
+        regions.append(Region(kind="figure", x0=im["x0"], x1=im["x1"], top=im["top"], bottom=im["bottom"]))
+
+    for members in _cluster_rects(list(page.curves) + thick_rects):
+        x0 = min(c["x0"] for c in members)
+        x1 = max(c["x1"] for c in members)
+        top = min(c["top"] for c in members)
+        bottom = max(c["bottom"] for c in members)
+        regions.append(Region(kind="figure", x0=x0, x1=x1, top=top, bottom=bottom, rects=members))
+
+    return regions
+
+
 def detect_regions(page) -> tuple:
-    """表→囲みの順に領域を確定する。図・波括弧はこのページでは未実装（下記参照）。
+    """表→囲み→図の順に領域を確定する。波括弧はこのページでは未実装（下記参照）。
+
+    表・囲みの候補は罫線（細い rect）に限る。塗りつぶされた rect（p199の図に
+    含まれる矩形図形など）は罫線ではないため、curve と合わせて図の候補とする。
+    これを分けないと、複数の塗りつぶし矩形がたまたま縦横とも3本以上の辺を
+    持つ配置になった場合に、図の一部が表として誤検出される
+    （p199で実際に発生した誤検出。SPEC上「表」ではないものを「表」と確定させて
+    しまうため、CLAUDE.md原則3に反する）。
 
     戻り値: (regions, unclassified_clusters)
-    unclassified_clusters は table/box いずれにも分類できなかった矩形クラスタで、
+    unclassified_clusters は table/box いずれにも分類できなかった罫線クラスタで、
     確定させずに報告する（CLAUDE.md 原則5：確定できないものを確定させない）。
     """
-    rects = page.rects
-    clusters = _cluster_rects(rects)
+    thin_rects = [r for r in page.rects if _is_thin(r)]
+    thick_rects = [r for r in page.rects if not _is_thin(r)]
+
+    clusters = _cluster_rects(thin_rects)
 
     regions = []
     unclassified = []
@@ -147,20 +201,39 @@ def detect_regions(page) -> tuple:
         bottom = max(r["bottom"] for r in members)
         regions.append(Region(kind=kind, x0=x0, x1=x1, top=top, bottom=bottom, rects=members))
 
-    # 図・波括弧の検出は未実装。curves/images を含むページに遭遇した場合、
-    # 誤って本文として処理するより先に止めて報告する（CLAUDE.md 原則4・5）。
-    if page.curves:
-        raise NotImplementedError(
-            f"page {page.page_number}: {len(page.curves)} 個の curve を検出したが、"
-            "図・波括弧の検出は未実装（p302/p158 着手時に実装する）。"
-        )
-    if page.images:
-        raise NotImplementedError(
-            f"page {page.page_number}: {len(page.images)} 個の image を検出したが、"
-            "図の検出は未実装（p302 着手時に実装する）。"
-        )
+    regions.extend(detect_figure_regions(page, thick_rects))
 
     return regions, unclassified
+
+
+def _is_page_label(text: str) -> bool:
+    return bool(PAGE_LABEL_THREE_PART.match(text) or PAGE_LABEL_TWO_PART.match(text))
+
+
+def detect_footer(chars: list) -> tuple:
+    """ページ下部表記（SPEC 2.11）を検出する。
+
+    座標の固定値ではなく書式（三成分/二成分）への一致で判定する。改正により
+    総ページ数やレイアウトが変わっても、書式ルール自体は不変であるため
+    （SPEC 2.11）、この判定は版をまたいで有効である。
+
+    ページ最下端の1行分の文字だけを候補とする。書式に一致しなければ、
+    そのページにはページ下部表記が無い（白紙ページ等）とみなし、除外は行わない
+    （CLAUDE.md「白紙ページ」：異常として扱わず正常系として処理する）。
+
+    戻り値: (footer_chars, footer_text)。検出できなければ ([], "")。
+    """
+    if not chars:
+        return [], ""
+    max_top = max(c.top for c in chars)
+    candidates = sorted(
+        (c for c in chars if max_top - c.top <= FOOTER_LINE_TOLERANCE),
+        key=lambda c: c.x0,
+    )
+    text = "".join(c.text for c in candidates).strip()
+    if _is_page_label(text):
+        return candidates, text
+    return [], ""
 
 
 def extract_page(page) -> PageExtraction:
@@ -169,12 +242,11 @@ def extract_page(page) -> PageExtraction:
 
     all_chars = [_to_char(c) for c in page.chars]
 
-    footer_chars = [c for c in all_chars if c.top > FOOTER_TOP_THRESHOLD]
-    footer_chars.sort(key=lambda c: c.x0)
-    footer_text = "".join(c.text for c in footer_chars).strip()
+    footer_chars, footer_text = detect_footer(all_chars)
+    footer_char_ids = {id(c) for c in footer_chars}
 
     def excluded(c: Char) -> bool:
-        if c.top > FOOTER_TOP_THRESHOLD:
+        if id(c) in footer_char_ids:
             return True
         cx = (c.x0 + c.x1) / 2
         cy = (c.top + c.bottom) / 2
