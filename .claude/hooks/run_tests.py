@@ -18,6 +18,9 @@ import subprocess
 import sys
 from pathlib import Path
 
+sys.stdout.reconfigure(encoding="utf-8")
+sys.stderr.reconfigure(encoding="utf-8")
+
 WATCHED_DIRS = ("src", "tests")
 PYTEST_ARGS = ["-x", "-q", "--no-header", "--tb=short"]
 MAX_OUTPUT_CHARS = 4000

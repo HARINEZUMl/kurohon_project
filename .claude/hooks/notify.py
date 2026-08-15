@@ -16,6 +16,9 @@ OSC 9 は Windows Terminal / WezTerm / ConEmu / iTerm2 が解釈する。
 import json
 import sys
 
+sys.stdout.reconfigure(encoding="utf-8")
+sys.stderr.reconfigure(encoding="utf-8")
+
 TYPE_FIELDS = ("notification_type", "notificationType", "matcher", "type")
 
 LABELS = {

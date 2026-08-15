@@ -20,6 +20,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+sys.stdout.reconfigure(encoding="utf-8")
+sys.stderr.reconfigure(encoding="utf-8")
 
 def project_root(payload: dict) -> Path:
     env = os.environ.get("CLAUDE_PROJECT_DIR")

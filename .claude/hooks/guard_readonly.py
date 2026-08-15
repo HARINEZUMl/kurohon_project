@@ -16,6 +16,9 @@ import os
 import sys
 from pathlib import Path
 
+sys.stdout.reconfigure(encoding="utf-8")
+sys.stderr.reconfigure(encoding="utf-8")
+
 # 編集を禁止するファイル（プロジェクトルートからの相対パス、小文字で記述）
 PROTECTED_FILES = {
     "spec.md",

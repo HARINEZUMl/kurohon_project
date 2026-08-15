@@ -5,28 +5,19 @@
   9. 図表の所属確定  ← 未実装。参照解決の結果を使って別途行う
 
 SPEC 2.12 は本プロジェクトで最も複雑な規則である。DECISIONS.md D010 とその
-追記（引き継ぎ、子孫判定、範囲指定）を読んでから変更すること。
+追記（引き継ぎ、子孫判定、範囲指定）、および D021・D022・D023（正規化テキスト
+からの抽出への切り替えに伴う判断）を読んでから変更すること。
 
-**このモジュールが前提とする簡略化**
+**text_norm から抽出する（SPEC 2.12 の要請どおり）**
 
-参照は「正規化テキスト（2.10）から抽出する」とSPECは定めるが、nodes.text_norm
-はまだ実装されていない（一般の本文正規化はSPEC 2.10全体を満たす形で別途
-実装が必要で、段落改行の保持など本モジュールの範囲を超える）。
+参照は `node.text_norm`（SPEC 2.10）から抽出する。以前は `text_raw` から
+直接抽出していた（text_norm 未実装だったため）が、SPEC 2.10 の正規化に伴い
+数字・英字が半角化されるため、階層記号を走査する正規表現も
+`structure.MARKER_PATTERNS`（原本表記＝text_raw用）ではなく
+`structure.MARKER_PATTERNS_NORM`（正規化後の表記用）を使う必要がある。
 
-ここでは `text_raw` から直接抽出する。以下の2点により、今回の目的に限れば
-text_norm を経由しなくても実害がないと判断した。
-
-1. SPEC が正規化を要求する主な理由は「行をまたぐ折り返しの結合」だが、
-   structure.py の行組み立てが既に折り返しを結合済みで、text_raw の時点で
-   一続きの文になっている（改行を挟まない）。
-2. 参照中の記号の全角・半角は、structure.py の階層記号パターン
-   （MARKER_PATTERNS）が原本の印字と同じ幅で定義されており、text_raw を
-   直接その正規表現で走査しても取りこぼさない。
-
-ただし、これはSPEC本文に明記された仕様ではなく、現状の実装（text_raw
-生成方法）に依存した簡略化である。将来 text_norm が実装され、正規化規則の
-どれか（均等割り付け空白の除去等）が参照の内部にまで影響する原本が
-見つかった場合は、この前提を見直すこと。
+この切り替えにより、D021（誤検出防止規則）が引き続き必要かどうかを実データで
+再検証した。結論と新たに見つかった誤検出パターンは D021 の追記を参照。
 """
 
 from __future__ import annotations
@@ -34,14 +25,54 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass, field
 
-from structure import MARKER_PATTERNS, MARKER_TYPES, RANK, normalize_marker
+from structure import MARKER_PATTERNS_NORM, MARKER_TYPES, RANK, normalize_marker
 from figures import normalize_figure_number
 
 # 素のkana型（paren_kanaではない単独の全角カタカナ1文字）の直後に、さらに
 # 全角カタカナが続く場合、それは階層記号ではなく通常のカタカナ語の一部で
 # ある可能性が高い（実測：「３スキャン」の「ス」がkana型と誤って一致する）。
 # 本物のkana記号は単独の1文字であり、単語の一部として現れることはない。
+#
+# 直前の文字についても同じ判定を行う（D021追記2）。「メートル、5,000メートル」
+# の末尾「ル」は直後が「、」のため上記の前方チェックをすり抜けるが、直前が
+# 「ト」（カタカナ）であり、単語の末尾文字にすぎないことが分かる。text_norm
+# 化により直後の「5」が半角数字として一致するようになったことで、この
+# 「ル、5」という見せかけの参照が実際に出現した（p88実測）。
 _KANA_CONTINUATION = re.compile(r"[ァ-ヺー]")
+
+# 素のalpha型（paren_alphaではない単独の半角英字1文字）の前後に、さらに
+# 半角の小文字英字が続く場合、それは階層記号ではなく英単語の一部である
+# （実測：p80「700feet」の「f」がalpha型と誤って一致し、直前の数字「700」と
+# number→alpha の段順で連結され「700f」という見せかけの参照になる）。
+# text_raw の時点ではalpha型は全角のみに一致していたため英文中の半角英字と
+# 衝突しなかったが、text_norm では英数字が半角に統一されるためこの区別が
+# 失われる（D021追記2）。kana型と同じ理由で前方・後方の両方を確認する。
+#
+# 大文字は対象に含めない。p75実測：「(３)ATISａ(a)アからオ」のａ（本物の
+# 階層記号）の直前は大文字の頭字語「ATIS」の末尾「S」であり、大文字→小文字の
+# 切り替わり自体が語の境界を示す（同じ単語の続きではない）。大文字も対象に
+# 含めると、この本物の参照の先頭セグメントを誤って除外してしまう。
+_ALPHA_CONTINUATION = re.compile(r"[a-z]")
+
+
+def _has_continuation(text: str, mtype: str, start: int, end: int) -> bool:
+    """matched span [start, end) の前後に、同じ文字種の続きがあるかを見る。
+
+    kana・alpha のみが対象（本文中の通常の語の一部として現れうる種別）。
+    それ以外（roman・数字の連続・かっこ付き記号）はそもそも regex 自体が
+    連続分をまとめて取り込むか、かっこで区切られているため対象外。
+    """
+    if mtype == "kana":
+        pattern = _KANA_CONTINUATION
+    elif mtype == "alpha":
+        pattern = _ALPHA_CONTINUATION
+    else:
+        return False
+    if pattern.match(text, end):
+        return True
+    if start > 0 and pattern.match(text, start - 1):
+        return True
+    return False
 
 # 第7段の階層記号（ア、イ、ウ…）はいろは・五十音順の通常サイズの文字のみで
 # あり、拗音・促音・単位の助数詞に使う小書きカタカナ（「ヵ月」「１ヶ所」等）
@@ -64,11 +95,12 @@ _FIGURE_REF_PATTERN_INNER = "図)"
 def _match_marker_at(text: str, pos: int):
     """posの位置から階層記号1つを取り出す。一致しなければNone。
 
-    structure.MARKER_PATTERNS をそのまま使う（本文中の参照表記でも、原本の
-    印字幅は階層記号そのものと同じであるため）。戻り値: (marker_type, raw, end) | None。
+    structure.MARKER_PATTERNS_NORM を使う。text は node.text_norm（SPEC 2.10
+    適用済み）であり、数字・英字は半角化されている。戻り値:
+    (marker_type, raw, end) | None。
     """
     for mtype in MARKER_TYPES:
-        m = MARKER_PATTERNS[mtype].match(text, pos)
+        m = MARKER_PATTERNS_NORM[mtype].match(text, pos)
         if m:
             return mtype, m.group(0), m.end()
     return None
@@ -100,7 +132,7 @@ def _match_chain_at(text: str, pos: int):
         mtype, raw, end = matched
         if mtype == "kana" and raw in _SMALL_KANA:
             break
-        if mtype == "kana" and _KANA_CONTINUATION.match(text, end):
+        if _has_continuation(text, mtype, p, end):
             break
         if RANK[mtype] <= prev_rank:
             break
@@ -113,7 +145,12 @@ def _match_chain_at(text: str, pos: int):
 
 
 def _find_figure_refs(text: str):
-    """図参照 ((２)－４図) を検出する。戻り値: [(start, end, number_norm), ...]。"""
+    """図参照 ((2)-4図) を検出する。戻り値: [(start, end, number_norm), ...]。
+
+    text は node.text_norm。SPEC 2.10 の半角化に加え、区切りのハイフンも
+    text_norm 生成時点で半角化済み（DECISIONS.md D022）であるため、原本の
+    "((２)－４図)" は "((2)-4図)" という形で現れる。
+    """
     results = []
     i = 0
     n = len(text)
@@ -125,21 +162,20 @@ def _find_figure_refs(text: str):
         if not text.startswith("((", i):
             i += 1
             continue
-        # 図番号本体 "(２)－４" を _match_chain_at 相当ではなく専用に走査する。
-        # 図番号は paren_number の直後に全角ハイフンと算用数字が続く形。
+        # 図番号本体 "(2)-4" を _match_chain_at 相当ではなく専用に走査する。
+        # 図番号は paren_number の直後に半角ハイフンと算用数字が続く形。
         j = i + 1
-        paren_num = MARKER_PATTERNS["paren_number"].match(text, j)
+        paren_num = MARKER_PATTERNS_NORM["paren_number"].match(text, j)
         if not paren_num:
             i += 1
             continue
         j = paren_num.end()
-        if not text.startswith("－", j):
+        if not text.startswith("-", j):
             i += 1
             continue
         j += 1
-        digit_match = None
         k = j
-        while k < n and "０" <= text[k] <= "９":
+        while k < n and "0" <= text[k] <= "9":
             k += 1
         if k == j:
             i += 1
@@ -149,7 +185,11 @@ def _find_figure_refs(text: str):
             i += 1
             continue
         end = digits_end + len(_FIGURE_REF_PATTERN_INNER)
-        raw_number = text[i + 1:digits_end]  # "(２)－４"
+        raw_number = text[i + 1:digits_end]  # "(2)-4"
+        # 比較は必ず figures.normalize_figure_number 経由で行う（両側を同じ
+        # 関数に通す。DECISIONS.md D022）。text_norm は既に半角化済みのため
+        # ここでは実質的に恒等変換だが、将来どちらかの正規化規則が変わっても
+        # 突き合わせが分散しないようにするため呼び出しを残す。
         results.append((i, end, normalize_figure_number(raw_number)))
         i = end
     return results
@@ -436,13 +476,13 @@ def _resolve_section_ref(node, prior_refs: list, subref: dict, roots: list, ref_
 
 
 def resolve_references_for_node(node, roots: list, figure_table_nodes: list) -> list:
-    """1ノードの本文（text_raw）から参照を抽出・解決する（SPEC 2.12）。
+    """1ノードの本文（text_norm）から参照を抽出・解決する（SPEC 2.12）。
 
     参照は出現順に処理し、条項参照の段の補完は同一ノード内で先行する参照を
     逆順に走査して行う（引き継ぎ状態はノードをまたいでリセットされる。
     呼び出し側でノードごとに本関数を呼ぶことでこれを満たす）。
     """
-    text = getattr(node, "text_raw", "") or ""
+    text = getattr(node, "text_norm", "") or ""
     if not text.strip():
         return []
 

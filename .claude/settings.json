@@ -2,18 +2,13 @@
   "permissions": {
     "deny": [
       "Edit(SPEC.md)",
-      "Write(SPEC.md)",
-      "MultiEdit(SPEC.md)",
-      "NotebookEdit(SPEC.md)",
-      "Edit(pdfs/**)",
-      "Write(pdfs/**)",
-      "MultiEdit(pdfs/**)"
+      "Edit(pdfs/**)"
     ]
   },
   "hooks": {
     "PreToolUse": [
       {
-        "matcher": "Edit|Write|MultiEdit|NotebookEdit",
+        "matcher": "Edit|Write|NotebookEdit",
         "hooks": [
           {
             "type": "command",
@@ -30,7 +25,7 @@
     ],
     "PostToolUse": [
       {
-        "matcher": "Edit|Write|MultiEdit",
+        "matcher": "Edit|Write",
         "hooks": [
           {
             "type": "command",
