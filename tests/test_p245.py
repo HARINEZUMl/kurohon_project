@@ -37,8 +37,10 @@ class P245Test(unittest.TestCase):
         self.assertIn("7(1)及び(4)", target.text_norm)
 
     def test_reference_with_number_type_in_own_path_is_not_descendant(self):
+        # SPEC 3.11「ref_text は原本での参照表記」。ref.ref_text は
+        # text_normではなくtext_rawから復元されるため、原本どおり全角。
         refs = self.result["refs"]
-        candidates = [r for r in refs if r.ref_text == "7(1)"]
+        candidates = [r for r in refs if r.ref_text == "７(１)"]
         self.assertTrue(candidates, "「７(１)」の参照が抽出されなかった")
         ref = candidates[0]
         # 参照元のパスに number 型（根の「４」）が含まれるため、子孫への

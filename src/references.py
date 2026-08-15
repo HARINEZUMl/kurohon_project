@@ -6,7 +6,8 @@
 
 SPEC 2.12 は本プロジェクトで最も複雑な規則である。DECISIONS.md D010 とその
 追記（引き継ぎ、子孫判定、範囲指定）、および D021・D022・D023（正規化テキスト
-からの抽出への切り替えに伴う判断）を読んでから変更すること。
+からの抽出への切り替えに伴う判断）、D024（ref_text をtext_rawから復元する
+対応）を読んでから変更すること。
 
 **text_norm から抽出する（SPEC 2.12 の要請どおり）**
 
@@ -18,6 +19,14 @@ SPEC 2.12 は本プロジェクトで最も複雑な規則である。DECISIONS.
 
 この切り替えにより、D021（誤検出防止規則）が引き続き必要かどうかを実データで
 再検証した。結論と新たに見つかった誤検出パターンは D021 の追記を参照。
+
+**ref_text は text_raw から復元する（SPEC 3.11。D024）**
+
+`refs.ref_text` は「原本での参照表記」（必須）と定義されており、正規化済み
+表記であってはならない。抽出・境界判定は text_norm 上で行うが、
+`Ref.ref_text` を構築する最後の一歩では、抽出した span を
+`structure.map_norm_span_to_raw`（node.text_norm_offsets を使う）で
+text_raw 上の span に変換し、そこから切り出す。
 """
 
 from __future__ import annotations
@@ -25,7 +34,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass, field
 
-from structure import MARKER_PATTERNS_NORM, MARKER_TYPES, RANK, normalize_marker
+from structure import MARKER_PATTERNS_NORM, MARKER_TYPES, RANK, map_norm_span_to_raw, normalize_marker
 from figures import normalize_figure_number
 
 # 素のkana型（paren_kanaではない単独の全角カタカナ1文字）の直後に、さらに
@@ -230,9 +239,12 @@ def _mask_spans(text: str, spans: list) -> str:
 def _extract_section_spans(text: str):
     """条項参照の候補となる範囲を走査する。
 
-    戻り値: [(start, end, chains, connectors), ...]。
+    戻り値: [(start, end, chains, connectors, chain_spans), ...]。
     chains は [[(marker_type, marker_norm), ...], ...]、connectors は
-    chains の間を埋める接続表現の列（len(chains)-1件）。
+    chains の間を埋める接続表現の列（len(chains)-1件）。chain_spans は
+    chains と対になる [(chain_start, chain_end), ...]（text上の位置。
+    _split_section_refs が個々の参照のspanを組み立てる際に使う。SPEC 3.11
+    対応でref_textをtext_rawから復元するために必要）。
 
     採用条件（SPEC 2.12「参照の境界」「範囲指定」の実例から導いた最小限の
     判定基準）:
@@ -257,6 +269,7 @@ def _extract_section_spans(text: str):
             continue
         chains = [segments]
         connectors = []
+        chain_spans = [(i, end)]
         pos = end
         while True:
             matched_conn = None
@@ -266,7 +279,8 @@ def _extract_section_spans(text: str):
                     break
             if matched_conn is None:
                 break
-            next_segments, next_end = _match_chain_at(text, pos + len(matched_conn))
+            next_start = pos + len(matched_conn)
+            next_segments, next_end = _match_chain_at(text, next_start)
             if next_segments is None:
                 break
             if matched_conn == RANGE_WORD and chains[-1][-1][0] != next_segments[-1][0]:
@@ -277,36 +291,43 @@ def _extract_section_spans(text: str):
                 break
             connectors.append(matched_conn)
             chains.append(next_segments)
+            chain_spans.append((next_start, next_end))
             pos = next_end
         if len(chains) >= 2 or len(chains[0]) >= 2:
-            spans.append((i, pos, chains, connectors))
+            spans.append((i, pos, chains, connectors, chain_spans))
             i = pos
         else:
             i += 1
     return spans
 
 
-def _split_section_refs(chains: list, connectors: list) -> list:
+def _split_section_refs(chains: list, connectors: list, chain_spans: list) -> list:
     """接続表現で区切られた記号列群を、個々の参照に分割する（SPEC 2.12）。
 
     「から」は直前・直後の記号列を1つの範囲参照にまとめる。それ以外の
     接続表現（及び/又は/若しくは/並びに/、）は境界であり、記号列ごとに
     独立した参照とする。
 
-    戻り値: [{"segments": [...], "range_to": [...] | None}, ...]。
+    戻り値: [{"segments": [...], "range_to": [...] | None, "span": (start, end)}, ...]。
+    span は text_norm（masked）上の、この参照1件分の位置。範囲参照
+    （from...から...to）では from の開始から to の終了までを覆う。
+    ref_text（SPEC 3.11）を text_raw から復元する際に使う。
     """
     refs = []
     pending = chains[0]
-    for connector, nxt in zip(connectors, chains[1:]):
+    pending_span = chain_spans[0]
+    for connector, nxt, nxt_span in zip(connectors, chains[1:], chain_spans[1:]):
         if connector == RANGE_WORD:
-            refs.append({"segments": pending, "range_to": nxt})
+            refs.append({"segments": pending, "range_to": nxt, "span": (pending_span[0], nxt_span[1])})
             pending = None
+            pending_span = None
         else:
             if pending is not None:
-                refs.append({"segments": pending, "range_to": None})
+                refs.append({"segments": pending, "range_to": None, "span": pending_span})
             pending = nxt
+            pending_span = nxt_span
     if pending is not None:
-        refs.append({"segments": pending, "range_to": None})
+        refs.append({"segments": pending, "range_to": None, "span": pending_span})
     return refs
 
 
@@ -486,6 +507,15 @@ def resolve_references_for_node(node, roots: list, figure_table_nodes: list) -> 
     if not text.strip():
         return []
 
+    offsets = getattr(node, "text_norm_offsets", None) or []
+
+    def raw_slice(start: int, end: int) -> str:
+        # SPEC 3.11「ref_text は原本での参照表記」。抽出・境界判定は
+        # text_norm 上で行うが、記録する ref_text は text_raw から
+        # 復元する（DECISIONS.md D024）。
+        raw_start, raw_end = map_norm_span_to_raw(offsets, start, end)
+        return node.text_raw[raw_start:raw_end]
+
     figure_spans = _find_figure_refs(text)
     table_spans = _find_table_refs(text)
     mask = _mask_spans(text, [(s, e) for s, e, _ in figure_spans] + list(table_spans))
@@ -495,14 +525,14 @@ def resolve_references_for_node(node, roots: list, figure_table_nodes: list) -> 
         events.append((s, e, "figure", number_norm))
     for s, e in table_spans:
         events.append((s, e, "table", None))
-    for s, e, chains, connectors in _extract_section_spans(mask):
-        events.append((s, e, "section", (chains, connectors)))
+    for s, e, chains, connectors, chain_spans in _extract_section_spans(mask):
+        events.append((s, e, "section", (chains, connectors, chain_spans)))
     events.sort(key=lambda ev: ev[0])
 
     refs: list = []
     for start, end, kind, payload in events:
-        ref_text = text[start:end]
         if kind == "figure":
+            ref_text = raw_slice(start, end)
             target = next(
                 (
                     n
@@ -523,6 +553,7 @@ def resolve_references_for_node(node, roots: list, figure_table_nodes: list) -> 
                 )
             )
         elif kind == "table":
+            ref_text = raw_slice(start, end)
             refs.append(
                 Ref(
                     from_node=node,
@@ -534,11 +565,9 @@ def resolve_references_for_node(node, roots: list, figure_table_nodes: list) -> 
                 )
             )
         else:
-            chains, connectors = payload
-            for subref in _split_section_refs(chains, connectors):
-                sub_text = _segment_text(subref["segments"])
-                if subref["range_to"] is not None:
-                    sub_text += RANGE_WORD + _segment_text(subref["range_to"])
+            chains, connectors, chain_spans = payload
+            for subref in _split_section_refs(chains, connectors, chain_spans):
+                sub_text = raw_slice(*subref["span"])
                 refs.append(_resolve_section_ref(node, refs, subref, roots, sub_text))
 
     return refs

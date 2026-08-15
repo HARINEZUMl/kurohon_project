@@ -95,7 +95,7 @@ def _is_justify_eligible_singleton(token: str) -> bool:
     return len(token) == 1 and bool(_JUSTIFY_ELIGIBLE.match(token))
 
 
-def _collapse_justified_spacing(text: str) -> str:
+def _collapse_justified_spacing(text: str) -> tuple:
     """漢字・全角カタカナの単独文字が空白で区切られた列を詰める。
 
     空白の連続でテキストをトークン化し、隣接する2つの「原本のトークン」が
@@ -107,24 +107,61 @@ def _collapse_justified_spacing(text: str) -> str:
     判定する（結合後の累積文字列の長さでは判定しない）。そうしないと
     「海 兵 隊」のような3つ以上の連鎖で、2文字目を結合した時点で累積が
     2文字になり、3文字目との結合を誤って拒否してしまう。
+
+    戻り値: (結果文字列, offsets)。offsets は結果文字列と同じ長さのリストで、
+    offsets[k] は結果文字列のk文字目が元のtextの何文字目（0始まり）に
+    由来するかを示す（SPEC 3.11「ref_text は原本での参照表記」への対応。
+    削除されるのは区切りの空白のみで、残る文字は元の文字をそのまま使うため、
+    「出力の各文字が元のどの位置か」を記録するだけで足りる）。
     """
-    parts = _JUSTIFY_SPACE_RUN.split(text)
-    seps = _JUSTIFY_SPACE_RUN.findall(text)
-    if not seps:
-        return text
-    result = parts[0]
-    prev_singleton = _is_justify_eligible_singleton(parts[0])
-    for sep, nxt in zip(seps, parts[1:]):
-        nxt_singleton = _is_justify_eligible_singleton(nxt)
-        if prev_singleton and nxt_singleton:
-            result += nxt  # 間の空白を落として結合する
-        else:
-            result += sep + nxt
+    matches = list(_JUSTIFY_SPACE_RUN.finditer(text))
+    if not matches:
+        return text, list(range(len(text)))
+
+    chars: list = []
+    offsets: list = []
+
+    def emit(s: str, start: int) -> None:
+        for j, ch in enumerate(s):
+            chars.append(ch)
+            offsets.append(start + j)
+
+    prev_end = 0
+    tokens = []  # (token_text, token_start)
+    for m in matches:
+        tokens.append((text[prev_end:m.start()], prev_end))
+        prev_end = m.end()
+    tokens.append((text[prev_end:], prev_end))
+
+    emit(*tokens[0])
+    prev_singleton = _is_justify_eligible_singleton(tokens[0][0])
+    for m, (tok_text, tok_start) in zip(matches, tokens[1:]):
+        nxt_singleton = _is_justify_eligible_singleton(tok_text)
+        if not (prev_singleton and nxt_singleton):
+            emit(m.group(0), m.start())  # 区切りの空白を残す
+        emit(tok_text, tok_start)
         prev_singleton = nxt_singleton
-    return result
+
+    return "".join(chars), offsets
 
 
-def normalize_text(text: str) -> str:
+def map_norm_span_to_raw(offsets: list, start: int, end: int) -> tuple:
+    """text_norm上の半開区間[start, end)を、text_raw上の半開区間に変換する。
+
+    normalize_text が返す offsets（text_normのk文字目が text_raw の
+    offsets[k]文字目に由来する、という対応表）を使う。参照解決
+    （references.py）が ref_text（SPEC 3.11「原本での参照表記」）を
+    text_raw から切り出すために使うほか、将来の検索結果ハイライト
+    （search_text はtext_normベース、表示はtext_raw）にも汎用的に使える
+    想定で、正規化ロジックから独立した単純な関数として提供する。
+    """
+    if start >= end:
+        raw_pos = offsets[start] if start < len(offsets) else (offsets[-1] + 1 if offsets else 0)
+        return raw_pos, raw_pos
+    return offsets[start], offsets[end - 1] + 1
+
+
+def normalize_text(text: str) -> tuple:
     """本文の正規化テキスト（SPEC 2.10）を生成する。
 
     適用する規則：
@@ -143,11 +180,16 @@ def normalize_text(text: str) -> str:
       - 「階層記号と本文の間の空白を除去しない」：_collapse_justified_spacing
         はトークン単位で判定するため、先頭の空白（記号と本文の区切り）は
         対象にならない
+
+    戻り値: (text_norm, offsets)。offsets は map_norm_span_to_raw に渡し、
+    text_norm上の位置から元の text_raw 上の位置へ戻すために使う
+    （SPEC 3.11。全角→半角・ハイフンの変換は1文字1文字の置換であり文字数を
+    変えないため、position はこの2ステップでは変化しない。文字数が変わる
+    のは空白除去のみであるため、そこでだけ offsets を追跡すれば足りる）。
     """
-    result = text.translate(_FULLWIDTH_TO_HALF)
-    result = result.translate(_HYPHEN_LIKE_TO_HALF)
-    result = _collapse_justified_spacing(result)
-    return result
+    translated = text.translate(_FULLWIDTH_TO_HALF).translate(_HYPHEN_LIKE_TO_HALF)
+    result, offsets = _collapse_justified_spacing(translated)
+    return result, offsets
 
 # 【】見出し単独の行（SPEC 2.5）。行全体がこの形なら見出し行とみなし、
 # 本文への連結対象から外す（属性としての分離はattributes.pyが行う）。
@@ -186,6 +228,9 @@ class Node:
     marker_norm: str = ""
     text_raw: str = ""
     text_norm: str = ""  # SPEC 2.10。build_forest の末尾で text_raw から生成する
+    # text_norm[k] が text_raw の何文字目に由来するか（SPEC 3.11。
+    # map_norm_span_to_raw で ref_text を text_raw から切り出す際に使う）。
+    text_norm_offsets: list = field(default_factory=list)
     parent: "Node | None" = None
     children: list = field(default_factory=list)
     seq: int = 0
@@ -479,7 +524,7 @@ def build_forest(lines: list) -> tuple:
 
     for node in all_nodes:
         if node.text_raw:
-            node.text_norm = normalize_text(node.text_raw)
+            node.text_norm, node.text_norm_offsets = normalize_text(node.text_raw)
 
     return confirmed_roots, unconfirmed_roots, orphan_lines, pending_headings, pending_captions, all_nodes
 

@@ -25,7 +25,7 @@ def _section_ref_texts(result) -> list:
         figure_spans = references._find_figure_refs(text)
         table_spans = references._find_table_refs(text)
         mask = references._mask_spans(text, [(s, e) for s, e, _ in figure_spans] + list(table_spans))
-        for s, e, chains, connectors in references._extract_section_spans(mask):
+        for s, e, chains, connectors, chain_spans in references._extract_section_spans(mask):
             out.append(text[s:e])
     return out
 

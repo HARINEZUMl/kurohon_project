@@ -9,6 +9,10 @@
 になる。本テストが検証するのは判定（is_descendant）の正しさであり、
 解決の成否ではない（解決には文書全体の処理が必要でありCLAUDE.mdの方針
 「384ページ全体を対象とするテストを書かない」に反する）。
+
+また、SPEC 3.11「ref_text は原本での参照表記」（DECISIONS.md D024）の
+回帰テストとして、この範囲内の参照の ref_text が正規化前の原本表記
+（全角数字を含む）と一致することも検証する。
 """
 
 from __future__ import annotations
@@ -53,6 +57,25 @@ class P254Test(unittest.TestCase):
         for ref in candidates:
             self.assertFalse(ref.is_descendant)
             self.assertIsNone(ref.inherited_from)
+
+    def test_ref_text_recovers_original_fullwidth_notation(self):
+        # SPEC 3.11「ref_text は原本での参照表記」（DECISIONS.md D024）。
+        # 「ｄ」ノードの参照は原本で「３(２)」、「ｇ」ノードの参照は
+        # 原本で「(Ⅰ)２(５)」と、いずれも全角数字を含む表記で印字されて
+        # いる。抽出・境界判定は正規化テキスト（半角数字）上で行うが、
+        # 記録される ref_text は正規化前の原本表記と一致しなければならない。
+        d_ref = next(r for r in self.refs if r.from_node.marker == "ｄ" and r.ref_type == "section")
+        self.assertEqual(d_ref.ref_text, "３(２)")
+
+        g_ref = next(r for r in self.refs if r.from_node.marker == "ｇ" and r.ref_type == "section")
+        self.assertEqual(g_ref.ref_text, "(Ⅰ)２(５)")
+
+    def test_ref_text_range_reference_matches_raw_with_connector(self):
+        # 範囲参照（from...から...to）の ref_text も、区切り文字「から」を
+        # 含めて text_raw から復元される。
+        range_refs = [r for r in self.refs if r.from_node.marker == "ｂ" and r.is_range]
+        self.assertTrue(range_refs)
+        self.assertEqual(range_refs[0].ref_text, "(a)から(c)")
 
 
 if __name__ == "__main__":
