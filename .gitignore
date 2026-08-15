@@ -13,3 +13,8 @@ desktop.ini
 # 生成物
 out/
 figures/
+# データベース
+data/*.db
+
+# 個人設定
+.claude/settings.local.json
