@@ -208,6 +208,16 @@ def _crop_and_save_image(page, physical_page: int, x0: float, top: float, x1: fl
     return path.replace(os.sep, "/")
 
 
+def normalize_figure_number(raw: str) -> str:
+    """図番号を正規化する（DECISIONS.md D020）。
+
+    全角数字を半角にするだけでなく、区切りの全角ハイフン「－」も半角「-」に
+    変換する。本文中の参照表記「((２)－４図)」（references.py）を同じ規則で
+    正規化した上で突き合わせるため、両者の表記を一致させる必要がある。
+    """
+    return raw.translate(_FULLWIDTH_TO_HALF).replace("－", "-")
+
+
 def build_figure_nodes(page, physical_page: int, figure_regions: list, captions: list) -> tuple:
     """図領域からFIGUREノードを生成する（SPEC 3.5）。所属は未確定。
 
@@ -232,7 +242,7 @@ def build_figure_nodes(page, physical_page: int, figure_regions: list, captions:
                 top=rtop,
                 bottom=rbottom,
                 number=cap_text,
-                number_norm=cap_text.translate(_FULLWIDTH_TO_HALF),
+                number_norm=normalize_figure_number(cap_text),
                 image_path=image_path,
             )
         )
@@ -241,6 +251,12 @@ def build_figure_nodes(page, physical_page: int, figure_regions: list, captions:
 
 def build_page_nodes(page, physical_page: int, regions: list, captions_on_page: list) -> tuple:
     """1ページ分の表・図領域からノードを生成する（所属未確定）。
+
+    所属（parent）はstage9（参照解決の後）まで確定しないが、紙面上の出現順
+    （SPEC 2.7「兄弟内の順序は紙面上の出現順による」）はこの段階で決まる情報
+    であり、所属の確定を待つ理由がない。ここではこのページ内のFIGURE/TABLE
+    ノードだけを対象に、top位置の昇順でseqを仮に確定しておく。最終的な兄弟内
+    seqはSECTIONの子と合流するstage9で改めて確定する。
 
     戻り値: (nodes, unmatched_figure_regions)。
     """
@@ -253,6 +269,10 @@ def build_page_nodes(page, physical_page: int, regions: list, captions_on_page: 
     figure_nodes, unmatched = build_figure_nodes(page, physical_page, figure_regions, captions_on_page)
     nodes.extend(figure_nodes)
 
+    nodes.sort(key=lambda n: n.top)
+    for i, node in enumerate(nodes, start=1):
+        node.seq = i
+
     return nodes, unmatched
 
 
@@ -261,7 +281,13 @@ def save_contact_sheet(page, physical_page: int, nodes: list, out_path: str) -> 
 
     CLAUDE.md「図表の検出は数値だけでは判断できない...自分で見て確認する
     こと」に対応する。out/ は検証用の中間生成物置き場（gitignore対象）。
+
+    out/ はgitignore対象のためクローン直後は存在しない。呼び出し側に
+    ディレクトリ作成を要求しないよう、ここで作成しておく。
     """
+    out_dir = os.path.dirname(out_path)
+    if out_dir:
+        os.makedirs(out_dir, exist_ok=True)
     im = page.to_image(resolution=150)
     colors = {"FIGURE": (255, 0, 0), "TABLE": (0, 0, 255)}
     for node in nodes:

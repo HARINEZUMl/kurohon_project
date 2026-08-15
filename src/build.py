@@ -18,6 +18,7 @@ sys.stdout.reconfigure(encoding="utf-8")
 import attributes
 import extract
 import figures
+import references
 import structure
 
 PDF_PATH = "pdfs/kurohon_148.pdf"
@@ -88,6 +89,9 @@ def process_pages(pdf: "pdfplumber.PDF", physical_pages: list) -> dict:
         c for c in pending_captions if not any(n.number == c[3] and n.physical_page == c[0] for n in figure_table_nodes)
     ]
 
+    roots = confirmed_roots + unconfirmed_roots
+    refs = references.resolve_all(all_nodes, roots, figure_table_nodes)
+
     return {
         "extractions": extractions,
         "confirmed_roots": confirmed_roots,
@@ -100,6 +104,7 @@ def process_pages(pdf: "pdfplumber.PDF", physical_pages: list) -> dict:
         "unmatched_figure_regions": unmatched_figure_regions,
         "unmatched_captions": unmatched_captions,
         "contact_sheets": contact_sheets,
+        "refs": refs,
     }
 
 
@@ -179,6 +184,12 @@ def main() -> None:
         print(f"\n--- contact sheets ---")
         for path in result["contact_sheets"]:
             print(f"  {path}")
+
+    if result["refs"]:
+        resolved = [r for r in result["refs"] if r.targets]
+        print(f"\n--- refs ({len(result['refs'])}, resolved={len(resolved)}) ---")
+        print("stage8=参照の解決。所属確定(stage9)は未実装のため、図表の所属自体はまだ確定していない:")
+        print(references.format_refs(result["refs"]))
 
     print(f"\n--- confirmed roots ({len(result['confirmed_roots'])}) ---")
     print("SPEC 2.1 の第1段（roman）に一致する、真の根であることが確定したノード:")

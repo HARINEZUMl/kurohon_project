@@ -1,0 +1,81 @@
+{
+  "permissions": {
+    "deny": [
+      "Edit(SPEC.md)",
+      "Write(SPEC.md)",
+      "MultiEdit(SPEC.md)",
+      "NotebookEdit(SPEC.md)",
+      "Edit(pdfs/**)",
+      "Write(pdfs/**)",
+      "MultiEdit(pdfs/**)"
+    ]
+  },
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Edit|Write|MultiEdit|NotebookEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "py",
+            "args": [
+              "-3.12",
+              "${CLAUDE_PROJECT_DIR}/.claude/hooks/guard_readonly.py"
+            ],
+            "timeout": 15,
+            "statusMessage": "保護対象ファイルを確認中"
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Edit|Write|MultiEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "py",
+            "args": [
+              "-3.12",
+              "${CLAUDE_PROJECT_DIR}/.claude/hooks/run_tests.py"
+            ],
+            "timeout": 180,
+            "statusMessage": "テストを実行中"
+          }
+        ]
+      }
+    ],
+    "SessionStart": [
+      {
+        "matcher": "startup|resume|clear|compact",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "py",
+            "args": [
+              "-3.12",
+              "${CLAUDE_PROJECT_DIR}/.claude/hooks/session_context.py"
+            ],
+            "timeout": 20
+          }
+        ]
+      }
+    ],
+    "Notification": [
+      {
+        "matcher": "permission_prompt|idle_prompt|agent_needs_input|agent_completed",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "py",
+            "args": [
+              "-3.12",
+              "${CLAUDE_PROJECT_DIR}/.claude/hooks/notify.py"
+            ],
+            "timeout": 10
+          }
+        ]
+      }
+    ]
+  }
+}
